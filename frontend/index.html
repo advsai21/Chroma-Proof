@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0b0f19">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon-192.png">
   <title>ChromaProof Companion</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -13,36 +15,37 @@
       <h1>🧪 ChromaProof</h1>
       <p>SIH26231 Presumptive Field Screening Companion</p>
     </header>
+    <div class="disclaimer">⚠️ <strong>PRESUMPTIVE ONLY.</strong> Results require confirmatory laboratory analysis (GC/MS). Prototype, not validated for operational use.</div>
+    <div id="pending" class="pending" style="display:none"></div>
 
-    <div class="disclaimer">
-      ⚠️ <strong>MANDATORY NOTICE:</strong> Presumptive field testing only. Results require confirmatory laboratory analysis (GC/MS).
-    </div>
+    <nav class="tabs">
+      <button id="tabCapture" class="tab active">📷 Capture</button>
+      <button id="tabHistory" class="tab">🗂 History</button>
+    </nav>
 
-    <div class="card">
-      <div class="camera-box">
-        <video id="webcam" autoplay playsinline></video>
-      </div>
-
-      <div class="form-group">
-        <label for="operatorId">Operator Identifier</label>
-        <input type="text" id="operatorId" value="OFFICER-4021">
-      </div>
-
-      <div class="form-group">
-        <label for="kitSelect">Reagent Chemical Profile</label>
-        <select id="kitSelect"></select>
-      </div>
-
-      <button id="btnCapture" class="btn">Snap & Analyze</button>
-
-      <!-- Gallery Input & Button -->
-      <input type="file" id="galleryInput" accept="image/*" style="display: none;">
-      <button id="btnGallery" class="btn" style="background: var(--surface); border: 1px solid var(--border); color: var(--text); margin-top: 8px;">📁 Upload from Gallery</button>
-
+    <section id="viewCapture" class="card">
+      <div class="guide">Place the <strong>reference card</strong> flat with all <strong>4 corner markers</strong> visible, kit reagent window inside the circle. Avoid glare and shadows.</div>
+      <div class="camera-box"><video id="webcam" autoplay playsinline muted></video></div>
+      <div class="form-group"><label for="operatorId">Operator Identifier</label>
+        <input type="text" id="operatorId" value="OFFICER-4021" maxlength="64"></div>
+      <div class="form-group"><label for="kitSelect">Reagent Chemical Profile</label><select id="kitSelect"></select></div>
+      <button id="btnCapture" class="btn">Snap &amp; Analyze</button>
+      <input type="file" id="galleryInput" accept="image/*" style="display:none">
+      <button id="btnGallery" class="btn secondary">📁 Upload from Gallery</button>
       <div id="resultBox" class="result-box"></div>
-    </div>
-  </div>
+    </section>
 
+    <section id="viewHistory" class="card" style="display:none">
+      <div class="filters">
+        <select id="fResult"><option value="">All results</option><option>POSITIVE</option><option>NEGATIVE</option><option>INCONCLUSIVE</option></select>
+        <input id="fOperator" placeholder="Operator">
+        <input id="fDate" type="date">
+        <button id="btnRefresh" class="btn small">Search</button>
+      </div>
+      <div id="historyList"></div>
+      <div id="detail" class="detail" style="display:none"></div>
+    </section>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>

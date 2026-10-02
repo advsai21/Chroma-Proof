@@ -13,3 +13,8 @@ node_modules/
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+
+# Signing keys (never commit)
+backend/keys/*
+!backend/keys/.gitkeep
+*.pem

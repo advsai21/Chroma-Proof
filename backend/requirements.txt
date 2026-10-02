@@ -4,6 +4,5 @@ python-multipart>=0.0.9
 opencv-python-headless>=4.9.0.80
 cryptography>=42.0.5
 reportlab>=4.1.0
-pillow>=10.2.0
 numpy>=1.26.0
-pandas>=2.2.0
+httpx>=0.27.0

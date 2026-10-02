@@ -34,3 +34,26 @@ video { width: 100%; height: 100%; object-fit: cover; }
 .result-box.INCONCLUSIVE { border-color: var(--inconclusive); background: rgba(234, 179, 8, 0.1); }
 .result-box h2 { margin: 0 0 8px 0; }
 .meta-data { font-family: monospace; font-size: 12px; color: var(--text-muted); word-break: break-all; }
+
+/* ---- v3 additions ---- */
+.tabs { display: flex; gap: 8px; }
+.tab { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 15px; }
+.tab.active { background: var(--primary); border-color: var(--primary); }
+.btn.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); margin-top: 8px; }
+.btn.small { width: auto; padding: 8px 14px; }
+.btn:disabled { opacity: .6; }
+.guide { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
+.pending { background: rgba(79,70,229,.15); border: 1px solid var(--primary); padding: 10px; border-radius: 10px; font-size: 14px; }
+.reasons { margin: 8px 0 0 18px; padding: 0; }
+.retake { background: rgba(234,179,8,.12); border: 1px solid var(--inconclusive); padding: 12px; border-radius: 10px; margin-top: 12px; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.filters select, .filters input { flex: 1 1 110px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.row { display: flex; justify-content: space-between; gap: 8px; padding: 10px 4px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 14px; }
+.badge { font-weight: 700; white-space: nowrap; }
+.badge.POSITIVE { color: var(--positive); } .badge.NEGATIVE { color: var(--negative); } .badge.INCONCLUSIVE { color: var(--inconclusive); }
+.detail { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; word-break: break-all; }
+.detail .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.vstatus { margin-top: 10px; padding: 10px; border-radius: 8px; font-weight: 600; }
+.vstatus.VALID { background: rgba(34,197,94,.15); } .vstatus.TAMPERED, .vstatus.INVALID { background: rgba(239,68,68,.18); }
+.presumptive { font-size: 12px; letter-spacing: .05em; opacity: .85; }
+video { width: 100%; border-radius: 10px; }
