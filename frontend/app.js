@@ -41,10 +41,10 @@ async function init() {
             const res = await fetch(`${API_URL}/api/process`, { method: "POST", body: formData });
             const data = await res.json();
             
-            if (data.status === "SUCCESS") {
+            if (res.ok && data.status === "SUCCESS") {
                 displayResult(data.record);
             } else {
-                alert("Analysis failed. Quality threshold might not be met.");
+                alert(data.detail || "Analysis failed. Please retake the photo.");
             }
         } catch (err) {
             alert("Processing failed. Check API connection.");
