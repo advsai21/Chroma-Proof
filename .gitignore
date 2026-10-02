@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Local database and secrets
+*.db
+.env
+
+# Node / tooling
+node_modules/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
