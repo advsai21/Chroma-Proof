@@ -16,6 +16,13 @@ function getLocation() {
     });
 }
 
+function showNotice(message) {
+    const box = document.getElementById('resultBox');
+    box.style.display = 'block';
+    box.className = 'result-box';
+    box.textContent = message;
+}
+
 async function init() {
     // 1. Load Kit Options
     try {
@@ -25,6 +32,7 @@ async function init() {
         kitSelect.innerHTML = kits.map(k => `<option value="${k.id}">${k.name}</option>`).join("");
     } catch (e) {
         console.error("Failed to load kits. API offline?");
+        showNotice("Could not load reagent kits. Check the API connection and reload.");
     }
 
     // 2. Setup Camera
@@ -34,11 +42,26 @@ async function init() {
         video.srcObject = stream;
     } catch (err) {
         console.warn("Camera access denied or unavailable.");
+        showNotice("Camera unavailable. Allow camera access, or use Upload from Gallery.");
     }
 
     // --- SHARED PROCESSING FUNCTION ---
     // Both the camera snapshot and the gallery upload route through here
+    let isProcessing = false;
+    const captureBtn = document.getElementById('btnCapture');
+    const galleryBtn = document.getElementById('btnGallery');
+
     async function processBlob(blob, sourceText) {
+        if (!blob) {
+            alert("Could not capture an image. Please try again.");
+            return;
+        }
+        if (isProcessing) return;
+        isProcessing = true;
+        captureBtn.disabled = true;
+        galleryBtn.disabled = true;
+        captureBtn.innerText = "Processing...";
+        galleryBtn.innerText = "Processing...";
         const formData = new FormData();
         formData.append('image', blob, 'capture.jpg');
         formData.append('operator_id', document.getElementById('operatorId').value);
@@ -46,12 +69,7 @@ async function init() {
         const gps = await getLocation();
         formData.append('location', `${gps} [${sourceText}]`);
 
-        const captureBtn = document.getElementById('btnCapture');
-        const galleryBtn = document.getElementById('btnGallery');
-        
-        // Show loading state
-        captureBtn.innerText = "Processing...";
-        galleryBtn.innerText = "Processing...";
+        // Loading state is set at the top of processBlob.
         
         try {
             const res = await fetch(`${API_URL}/api/process`, { method: "POST", body: formData });
@@ -67,12 +85,19 @@ async function init() {
         } finally {
             // Restore buttons
             captureBtn.innerText = "Snap & Analyze";
+            captureBtn.disabled = false;
+            galleryBtn.disabled = false;
+            isProcessing = false;
             galleryBtn.innerText = "📁 Upload from Gallery";
         }
     }
 
     // 3. Handle Live Camera Capture
     document.getElementById('btnCapture').addEventListener('click', () => {
+        if (!video.videoWidth || !video.videoHeight) {
+            alert("Camera is not ready. Allow camera access, or use Upload from Gallery.");
+            return;
+        }
         const canvas = document.createElement('canvas');
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
