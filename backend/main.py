@@ -188,7 +188,7 @@ async def process_capture(image: UploadFile = File(...), operator_id: str = Form
     img_hash = crypto_system.sha256_digest(img_bytes)
     
     record_dict = {
-        "record_id": f"CP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+        "record_id": f"CP-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
         "operator_id": operator_id, "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "kit_id": kit_id, "result": cv_res["result"], "confidence": cv_res["confidence"],
         "classifier_version": cv_res["classifier_version"], "explanation": cv_res["explanation"],
