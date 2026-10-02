@@ -173,6 +173,10 @@ async def process_capture(image: UploadFile = File(...), operator_id: str = Form
     cv_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     
     cv_res = ChromaProofVision.evaluate(cv_bgr, kit_id)
+
+    if cv_res.get("quality_status") != "PASSED":
+        raise HTTPException(status_code=422, detail=cv_res["explanation"])
+    
     img_hash = crypto_system.sha256_digest(img_bytes)
     
     record_dict = {
