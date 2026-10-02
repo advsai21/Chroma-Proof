@@ -1,6 +1,6 @@
 """ChromaProof API - FastAPI + SQLite. Run: cd backend && uvicorn main:app --reload
 Presumptive screening only. DEV signing key; production key custody is NOT implemented."""
-import hashlib, io, json, os, sqlite3, uuid
+import base64, hashlib, io, json, os, sqlite3, uuid
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
@@ -33,9 +33,19 @@ class Crypto:
               "explanation", "image_sha256", "location", "calibration", "key_id", "canonical_version"]
 
     def __init__(self):
-        pem = os.getenv("SIGNING_KEY_PEM")                 # use this on Render (ephemeral disk)
-        if pem:
-            self.priv = serialization.load_pem_private_key(pem.replace("\\n", "\n").encode(), None)
+        b64 = (os.getenv("SIGNING_KEY_B64") or "").strip().strip("\"'")   # preferred on Render: one safe line
+        pem = os.getenv("SIGNING_KEY_PEM")
+        if b64:
+            try:
+                self.priv = ed25519.Ed25519PrivateKey.from_private_bytes(base64.b64decode(b64))
+            except Exception as e:
+                raise RuntimeError("SIGNING_KEY_B64 is invalid: it must be the base64 of a 32-byte Ed25519 seed") from e
+        elif pem:
+            body = pem.strip().strip("\"'").replace("\\n", "\n")
+            try:
+                self.priv = serialization.load_pem_private_key(body.encode(), None)
+            except ValueError as e:
+                raise RuntimeError("SIGNING_KEY_PEM is malformed (lost newlines/quotes?). Use SIGNING_KEY_B64 instead.") from e
         elif os.path.exists(KEY_PATH):
             with open(KEY_PATH, "rb") as f:
                 self.priv = serialization.load_pem_private_key(f.read(), None)
