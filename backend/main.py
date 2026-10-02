@@ -1,213 +1,206 @@
-import io
-import json
-import uuid
-import sqlite3
-import hashlib
-from dataclasses import dataclass
-from typing import Dict, Tuple, List, Optional
+"""ChromaProof API - FastAPI + SQLite. Run: cd backend && uvicorn main:app --reload
+Presumptive screening only. DEV signing key; production key custody is NOT implemented."""
+import hashlib, io, json, os, sqlite3, uuid
 from datetime import datetime, timezone
+from typing import Optional, Tuple
 
-import numpy as np
-import cv2
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import cv2, numpy as np
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives import serialization
-from cryptography.exceptions import InvalidSignature
+from vision import process_image
 
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as RLImage
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.getenv("DB_PATH", os.path.join(HERE, "chromaproof.db"))
+KEY_PATH = os.getenv("KEY_PATH", os.path.join(HERE, "keys", "dev_ed25519_private.pem"))
+DEMO_MODE = os.getenv("DEMO_MODE", "1") == "1"
+NOTICE = ("PRESUMPTIVE RESULT ONLY. Laboratory confirmation (e.g. GC/MS) is required. Prototype: not validated "
+          "for operational use; a valid signature proves integrity only, not correctness or admissibility.")
+CANONICAL_VERSION = "2"
 
 app = FastAPI(title="ChromaProof API")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# --- CORE LOGIC ---
+# ------------------------------------------------------------------ Role 3: crypto
+class Crypto:
+    SIGNED = ["record_id", "operator_id", "timestamp_utc", "kit_id", "result", "confidence", "classifier_version",
+              "explanation", "image_sha256", "location", "calibration", "key_id", "canonical_version"]
 
-class ChromaProofCrypto:
     def __init__(self):
-        self._private_key = ed25519.Ed25519PrivateKey.generate()
-        self._public_key = self._private_key.public_key()
-
-    @property
-    def public_key_hex(self) -> str:
-        return self._public_key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        ).hex()
-
-    @property
-    def key_id(self) -> str:
-        return f"KEY-ED25519-{self.public_key_hex[:8].upper()}"
+        pem = os.getenv("SIGNING_KEY_PEM")                 # use this on Render (ephemeral disk)
+        if pem:
+            self.priv = serialization.load_pem_private_key(pem.replace("\\n", "\n").encode(), None)
+        elif os.path.exists(KEY_PATH):
+            with open(KEY_PATH, "rb") as f:
+                self.priv = serialization.load_pem_private_key(f.read(), None)
+        else:                                              # first run: create + persist a DEV key
+            self.priv = ed25519.Ed25519PrivateKey.generate()
+            os.makedirs(os.path.dirname(KEY_PATH), exist_ok=True)
+            with open(KEY_PATH, "wb") as f:
+                f.write(self.priv.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                serialization.NoEncryption()))
+            try: os.chmod(KEY_PATH, 0o600)
+            except OSError: pass
+        self.pub = self.priv.public_key()
+        raw = self.pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        self.public_key_hex = raw.hex()
+        self.key_id = "KEY-ED25519-" + hashlib.sha256(raw).hexdigest()[:12].upper()
 
     @staticmethod
-    def sha256_digest(data: bytes) -> str:
-        return hashlib.sha256(data).hexdigest()
+    def sha256(b: bytes) -> str: return hashlib.sha256(b).hexdigest()
 
-    @staticmethod
-    def canonicalize(record_dict: dict) -> str:
-        subset = {
-            "record_id": str(record_dict["record_id"]),
-            "operator_id": str(record_dict["operator_id"]),
-            "timestamp_utc": str(record_dict["timestamp_utc"]),
-            "kit_id": str(record_dict["kit_id"]),
-            "result": str(record_dict["result"]),
-            "confidence": str(record_dict["confidence"]),
-            "classifier_version": str(record_dict["classifier_version"]),
-            "image_sha256": str(record_dict["image_sha256"]),
-            "location": str(record_dict.get("location", "N/A"))
-        }
-        return json.dumps(subset, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    def canonical(self, rec: dict) -> bytes:
+        body = {k: rec.get(k) for k in self.SIGNED}
+        return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
-    def sign(self, record_dict: dict) -> str:
-        canonical_bytes = self.canonicalize(record_dict).encode("utf-8")
-        return self._private_key.sign(canonical_bytes).hex()
+    def sign(self, rec: dict) -> str: return self.priv.sign(self.canonical(rec)).hex()
 
-    @classmethod
-    def verify(cls, record_dict: dict, signature_hex: str, public_key_hex: str, image_bytes: bytes = None) -> Tuple[bool, str]:
-        if image_bytes is not None:
-            calc_hash = cls.sha256_digest(image_bytes)
-            if calc_hash != record_dict.get("image_sha256"):
-                return False, f"IMAGE TAMPER DETECTED: Computed ({calc_hash[:10]}...) != Stored"
+    def verify(self, rec: dict, sig_hex: str, image: Optional[bytes]) -> Tuple[str, str]:
+        """Trusts ONLY the server's own public key, never a key stored in the record."""
+        if not sig_hex: return "INVALID", "Missing signature."
+        if image is not None and self.sha256(image) != rec.get("image_sha256"):
+            return "TAMPERED", "Image hash mismatch: the image changed after signing."
+        if rec.get("key_id") != self.key_id:
+            return "INVALID", f"Unknown signing key ({rec.get('key_id')}); not the trusted server key."
         try:
-            pub_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex))
-            canonical_bytes = cls.canonicalize(record_dict).encode("utf-8")
-            pub_key.verify(bytes.fromhex(signature_hex), canonical_bytes)
-            return True, "VERIFIED: Cryptographic Ed25519 signature valid."
-        except InvalidSignature:
-            return False, "TAMPER DETECTED: Digital signature mismatch."
-        except Exception as ex:
-            return False, f"VERIFICATION ERROR: {str(ex)}"
+            self.pub.verify(bytes.fromhex(sig_hex), self.canonical(rec))
+        except (InvalidSignature, ValueError):
+            return "TAMPERED", "Signature mismatch: record content changed after signing."
+        return "VALID", "Hash and Ed25519 signature match (integrity only; not proof the test was correct)."
 
-@dataclass
-class KitProfile:
-    kit_id: str
-    display_name: str
-    target_substance: str
-    pos_centroid_lab: Tuple[float, float, float]
-    neg_centroid_lab: Tuple[float, float, float]
-    pos_threshold_delta_e: float
-    neg_threshold_delta_e: float
+crypto = Crypto()
 
-class MultiKitRegistry:
-    KITS = {
-        "cobalt_thiocyanate": KitProfile("cobalt_thiocyanate", "Cobalt Thiocyanate (Scott Reagent)", "Cocaine HCl / Base", (36.0, 3.0, -48.0), (55.0, 45.0, 12.0), 65.0, 65.0),
-        "marquis": KitProfile("marquis", "Marquis Reagent", "Opiates / MDMA", (21.0, 28.0, -18.0), (82.0, 0.0, 8.0), 65.0, 65.0),
-        "duquenois_levine": KitProfile("duquenois_levine", "Duquenois-Levine Reagent", "Cannabinoids (THC)", (30.0, 31.0, -30.0), (75.0, 2.0, 22.0), 65.0, 65.0)
-    }
 
-class ChromaProofVision:
-    VERSION = "ChromaProof-CV-v2.1-API"
-    
-    @classmethod
-    def evaluate(cls, bgr_image: np.ndarray, kit_id: str) -> dict:
-        gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
-        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        glare_ratio = float(np.sum(gray > 248) / gray.size)
+# ------------------------------------------------------------------ kits (DEMO references, unvalidated)
+KITS = {
+    "cobalt_thiocyanate": dict(name="Cobalt Thiocyanate (Scott Reagent)", pos=(36.0, 3.0, -48.0), neg=(55.0, 45.0, 12.0)),
+    "marquis": dict(name="Marquis Reagent", pos=(21.0, 28.0, -18.0), neg=(82.0, 0.0, 8.0)),
+    "duquenois_levine": dict(name="Duquenois-Levine Reagent", pos=(30.0, 31.0, -30.0), neg=(75.0, 2.0, 22.0)),
+}
 
-        if lap_var < 35.0:
-            return {"quality_status": "FAILED_QUALITY_GATE", "result": "INCONCLUSIVE", "confidence": "LOW (0.0%)", "explanation": "Image sharpness check failed.", "classifier_version": cls.VERSION}
 
-        # BYPASS GRAY-WORLD CALIBRATION FOR SYNTHETIC DEMO IMAGES
-        calibrated = bgr_image.copy()
+# ------------------------------------------------------------------ storage
+def db():
+    c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row
+    c.execute("""CREATE TABLE IF NOT EXISTS records_v2(record_id TEXT PRIMARY KEY, operator_id TEXT, timestamp_utc TEXT,
+                 kit_id TEXT, result TEXT, body TEXT, signature_hex TEXT, image BLOB, sync_status TEXT)""")
+    return c
 
-        cy, cx = h // 2, w // 2
-        dy, dx = int(h * 0.15), int(w * 0.15)
-        roi = calibrated[cy - dy : cy + dy, cx - dx : cx + dx]
+def public(row) -> dict:
+    return {**json.loads(row["body"]), "signature_hex": row["signature_hex"], "sync_status": row["sync_status"],
+            "public_key_hex": crypto.public_key_hex}
 
-        roi_lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
-        measured_lab = np.array([float(np.mean(roi_lab[:, :, 0]) * (100.0 / 255.0)), float(np.mean(roi_lab[:, :, 1]) - 128.0), float(np.mean(roi_lab[:, :, 2]) - 128.0)])
+def get_row(rid):
+    r = db().execute("SELECT * FROM records_v2 WHERE record_id=?", (rid,)).fetchone()
+    if not r: raise HTTPException(404, "Record not found.")
+    return r
 
-        profile = MultiKitRegistry.KITS.get(kit_id, MultiKitRegistry.KITS["cobalt_thiocyanate"])
-        delta_e_pos = float(np.linalg.norm(measured_lab - np.array(profile.pos_centroid_lab)))
-        delta_e_neg = float(np.linalg.norm(measured_lab - np.array(profile.neg_centroid_lab)))
 
-        if delta_e_pos <= profile.pos_threshold_delta_e and delta_e_pos < delta_e_neg:
-            return {"quality_status": "PASSED", "result": "POSITIVE", "confidence": f"HIGH ({max(55.0, min(95.0, 100.0 - (delta_e_pos * 1.4))):.1f}%)", "explanation": "Reaction profile matches target.", "classifier_version": cls.VERSION}
-        elif delta_e_neg <= profile.neg_threshold_delta_e and delta_e_neg < delta_e_pos:
-            return {"quality_status": "PASSED", "result": "NEGATIVE", "confidence": f"HIGH ({max(50.0, min(92.0, 100.0 - (delta_e_neg * 1.4))):.1f}%)", "explanation": "No target shift detected.", "classifier_version": cls.VERSION}
-        return {"quality_status": "PASSED", "result": "INCONCLUSIVE", "confidence": "UNCERTAIN (45.0%)", "explanation": "Ambiguous profile.", "classifier_version": cls.VERSION}
-
-class ChromaProofDB:
-    def __init__(self, db_path="chromaproof.db"):
-        self.db_path = db_path
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS records (record_id TEXT PRIMARY KEY, operator_id TEXT, timestamp_utc TEXT, kit_id TEXT, result TEXT, confidence TEXT, classifier_version TEXT, explanation TEXT, image_sha256 TEXT, image_bytes BLOB, canonical_payload TEXT, signature_hex TEXT, key_id TEXT, public_key_hex TEXT, sync_status TEXT, location TEXT)")
-
-    def save(self, rec: dict, img: bytes):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (rec["record_id"], rec["operator_id"], rec["timestamp_utc"], rec["kit_id"], rec["result"], rec["confidence"], rec["classifier_version"], rec["explanation"], rec["image_sha256"], img, rec["canonical_payload"], rec["signature_hex"], rec["key_id"], rec["public_key_hex"], rec["sync_status"], rec["location"]))
-
-    def get(self, record_id: str):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            r = conn.execute("SELECT * FROM records WHERE record_id = ?", (record_id,)).fetchone()
-            return dict(r) if r else None
-
-# Runtime Instances
-crypto_system = ChromaProofCrypto()
-db_system = ChromaProofDB()
-
-# --- FASTAPI ROUTES ---
+# ------------------------------------------------------------------ routes
+@app.get("/api/health")
+def health(): return {"ok": True, "key_id": crypto.key_id, "demo_mode": DEMO_MODE}
 
 @app.get("/api/kits")
-def get_kits():
-    return [{"id": k, "name": v.display_name} for k, v in MultiKitRegistry.KITS.items()]
+def kits(): return [{"id": k, "name": v["name"]} for k, v in KITS.items()]
+
+@app.get("/api/pubkey")
+def pubkey(): return {"key_id": crypto.key_id, "public_key_hex": crypto.public_key_hex, "note": "DEV KEY - non-production"}
 
 @app.post("/api/process")
-async def process_capture(image: UploadFile = File(...), operator_id: str = Form("OFFICER-4021"), kit_id: str = Form("cobalt_thiocyanate"), location: str = Form("GPS: Uploaded")):
-    img_bytes = await image.read()
-    if len(img_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Image too large (max 10 MB).")
-    np_arr = np.frombuffer(img_bytes, np.uint8)
-    cv_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    if cv_bgr is None:
-        raise HTTPException(status_code=400, detail="File is not a valid image.")
-    if min(cv_bgr.shape[:2]) < 64:
-        raise HTTPException(status_code=400, detail="Image is too small (min 64x64).")
-    if kit_id not in MultiKitRegistry.KITS:
-        raise HTTPException(status_code=400, detail=f"Unknown kit_id: {kit_id}")
-    
-    cv_res = ChromaProofVision.evaluate(cv_bgr, kit_id)
+async def process_capture(image: UploadFile = File(...), operator_id: str = Form("OFFICER-4021"),
+                          kit_id: str = Form("cobalt_thiocyanate"), location: str = Form("GPS: unavailable")):
+    data = await image.read()
+    if len(data) > 10 * 1024 * 1024: raise HTTPException(413, "Image too large (max 10 MB).")
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if img is None: raise HTTPException(400, "File is not a valid image.")
+    if min(img.shape[:2]) < 200: raise HTTPException(400, "Image too small (min 200 px).")
+    if kit_id not in KITS: raise HTTPException(400, f"Unknown kit_id: {kit_id}")
+    if not operator_id.strip(): raise HTTPException(400, "operator_id required.")
 
-    if cv_res.get("quality_status") != "PASSED":
-        raise HTTPException(status_code=422, detail=cv_res["explanation"])
-    
-    img_hash = crypto_system.sha256_digest(img_bytes)
-    
-    record_dict = {
-        "record_id": f"CP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
-        "operator_id": operator_id, "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "kit_id": kit_id, "result": cv_res["result"], "confidence": cv_res["confidence"],
-        "classifier_version": cv_res["classifier_version"], "explanation": cv_res["explanation"],
-        "image_sha256": img_hash, "location": location
-    }
-    
-    full_record = {**record_dict, "canonical_payload": crypto_system.canonicalize(record_dict), "signature_hex": crypto_system.sign(record_dict), "key_id": crypto_system.key_id, "public_key_hex": crypto_system.public_key_hex, "sync_status": "SYNCED_API"}
-    db_system.save(full_record, img_bytes)
-    return {"status": "SUCCESS", "record": full_record}
+    k = KITS[kit_id]
+    r = process_image(img, ref_pos_lab=k["pos"], ref_neg_lab=k["neg"])
+    if r["quality_status"] != "PASS":
+        return JSONResponse(status_code=422, content={"detail": " ".join(r["quality_reasons"]),
+                                                      "reasons": r["quality_reasons"], "status": "RETAKE"})
+    now = datetime.now(timezone.utc)
+    rec = {"record_id": f"CP-{now:%Y%m%d}-{uuid.uuid4().hex[:6].upper()}", "operator_id": operator_id.strip()[:64],
+           "timestamp_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "timestamp_source": "server clock",
+           "kit_id": kit_id, "result": r["result"].upper(), "confidence": r["confidence"],
+           "confidence_note": "relative colour-margin cue, NOT a probability", "classifier_version": r["classifier_version"],
+           "explanation": r["explanation"], "image_sha256": crypto.sha256(data), "location": location[:200],
+           "calibration": "reference-card (white/gray/black patches)", "key_id": crypto.key_id,
+           "canonical_version": CANONICAL_VERSION, "notice": NOTICE}
+    sig = crypto.sign(rec)
+    with db() as c:
+        c.execute("INSERT INTO records_v2 VALUES (?,?,?,?,?,?,?,?,?)", (rec["record_id"], rec["operator_id"],
+                  rec["timestamp_utc"], kit_id, rec["result"], json.dumps(rec), sig, data, "SYNCED"))
+    return {"status": "SUCCESS", "record": {**rec, "signature_hex": sig, "sync_status": "SYNCED",
+                                           "public_key_hex": crypto.public_key_hex}}
+
+@app.get("/api/records")
+def list_records(result: Optional[str] = None, operator: Optional[str] = None, date: Optional[str] = None,
+                 kit_id: Optional[str] = None):
+    q, a = "SELECT * FROM records_v2 WHERE 1=1", []
+    for col, val, op in (("result", result and result.upper(), "="), ("kit_id", kit_id, "="),
+                         ("operator_id", operator and f"%{operator}%", "LIKE"), ("timestamp_utc", date and f"{date}%", "LIKE")):
+        if val: q += f" AND {col} {op} ?"; a.append(val)
+    return [public(r) for r in db().execute(q + " ORDER BY timestamp_utc DESC LIMIT 200", a)]
+
+@app.get("/api/records/{rid}")
+def one(rid: str): return public(get_row(rid))
+
+@app.get("/api/records/{rid}/image")
+def image(rid: str): return Response(get_row(rid)["image"], media_type="image/jpeg")
 
 class VerifyReq(BaseModel):
     record_id: str
     simulate_tamper: bool = False
 
 @app.post("/api/verify")
-def verify_record(req: VerifyReq):
-    rec = db_system.get(req.record_id)
-    if not rec: return {"valid": False, "message": "Record not found in DB."}
-    test_dict = {k: rec[k] for k in ["record_id", "operator_id", "timestamp_utc", "kit_id", "result", "confidence", "classifier_version", "image_sha256", "location"]}
-    if req.simulate_tamper: test_dict["result"] = "NEGATIVE" if test_dict["result"] == "POSITIVE" else "POSITIVE"
-    valid, msg = ChromaProofCrypto.verify(test_dict, rec["signature_hex"], rec["public_key_hex"], rec["image_bytes"])
-    return {"valid": valid, "message": msg, "signer_key": rec["key_id"]}
+def verify(req: VerifyReq):
+    row = get_row(req.record_id); rec = json.loads(row["body"])
+    if req.simulate_tamper:                                  # in-memory only; DB untouched
+        rec["result"] = "NEGATIVE" if rec["result"] == "POSITIVE" else "POSITIVE"
+    status, msg = crypto.verify(rec, row["signature_hex"], row["image"])
+    return {"status": status, "valid": status == "VALID", "message": msg, "signer_key": rec.get("key_id"),
+            "trusted_key": crypto.key_id, "simulated_tamper": req.simulate_tamper,
+            "scope": "Integrity only; not proof of correct chemistry, operator identity or admissibility."}
+
+@app.get("/api/records/{rid}/report.json")
+def report_json(rid: str):
+    row = get_row(rid); status, msg = crypto.verify(json.loads(row["body"]), row["signature_hex"], row["image"])
+    return {"record": public(row), "verification": {"status": status, "message": msg, "trusted_key": crypto.key_id},
+            "notice": NOTICE}
+
+@app.get("/api/records/{rid}/report.pdf")
+def report_pdf(rid: str):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    row = get_row(rid); rec = json.loads(row["body"])
+    status, msg = crypto.verify(rec, row["signature_hex"], row["image"])
+    st, buf = getSampleStyleSheet(), io.BytesIO()
+    cells = [[k, Paragraph(str(rec.get(k, "")), st["BodyText"])] for k in
+             ["record_id", "operator_id", "timestamp_utc", "kit_id", "result", "confidence", "classifier_version",
+              "explanation", "location", "calibration", "image_sha256", "key_id"]]
+    cells += [["signature", Paragraph(row["signature_hex"][:64] + "...", st["BodyText"])],
+              ["verification", Paragraph(f"<b>{status}</b> - {msg}", st["BodyText"])]]
+    t = Table(cells, colWidths=[38 * mm, 130 * mm])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.4, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                           ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke)]))
+    thumb = io.BytesIO(cv2.imencode(".jpg", cv2.resize(cv2.imdecode(np.frombuffer(row["image"], np.uint8), 1),
+                                                       (400, 320)))[1].tobytes())
+    SimpleDocTemplate(buf, pagesize=A4, title=f"ChromaProof {rid}").build([
+        Paragraph("ChromaProof - Presumptive Field Test Record", st["Title"]),
+        Paragraph(f"<font color='red'><b>{NOTICE}</b></font>", st["BodyText"]), Spacer(1, 8), t, Spacer(1, 8),
+        RLImage(thumb, width=70 * mm, height=56 * mm)])
+    return Response(buf.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{rid}.pdf"'})
