@@ -169,8 +169,16 @@ def get_kits():
 @app.post("/api/process")
 async def process_capture(image: UploadFile = File(...), operator_id: str = Form("OFFICER-4021"), kit_id: str = Form("cobalt_thiocyanate"), location: str = Form("GPS: Uploaded")):
     img_bytes = await image.read()
+    if len(img_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB).")
     np_arr = np.frombuffer(img_bytes, np.uint8)
     cv_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    if cv_bgr is None:
+        raise HTTPException(status_code=400, detail="File is not a valid image.")
+    if min(cv_bgr.shape[:2]) < 64:
+        raise HTTPException(status_code=400, detail="Image is too small (min 64x64).")
+    if kit_id not in MultiKitRegistry.KITS:
+        raise HTTPException(status_code=400, detail=f"Unknown kit_id: {kit_id}")
     
     cv_res = ChromaProofVision.evaluate(cv_bgr, kit_id)
 
