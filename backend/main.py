@@ -102,9 +102,9 @@ class KitProfile:
 
 class MultiKitRegistry:
     KITS = {
-        "cobalt_thiocyanate": KitProfile("cobalt_thiocyanate", "Cobalt Thiocyanate (Scott Reagent)", "Cocaine HCl / Base", (36.0, 3.0, -48.0), (55.0, 45.0, 12.0), 32.0, 28.0),
-        "marquis": KitProfile("marquis", "Marquis Reagent", "Opiates / MDMA", (21.0, 28.0, -18.0), (82.0, 0.0, 8.0), 30.0, 24.0),
-        "duquenois_levine": KitProfile("duquenois_levine", "Duquenois-Levine Reagent", "Cannabinoids (THC)", (30.0, 31.0, -30.0), (75.0, 2.0, 22.0), 28.0, 24.0)
+        "cobalt_thiocyanate": KitProfile("cobalt_thiocyanate", "Cobalt Thiocyanate (Scott Reagent)", "Cocaine HCl / Base", (36.0, 3.0, -48.0), (55.0, 45.0, 12.0), 65.0, 65.0),
+        "marquis": KitProfile("marquis", "Marquis Reagent", "Opiates / MDMA", (21.0, 28.0, -18.0), (82.0, 0.0, 8.0), 65.0, 65.0),
+        "duquenois_levine": KitProfile("duquenois_levine", "Duquenois-Levine Reagent", "Cannabinoids (THC)", (30.0, 31.0, -30.0), (75.0, 2.0, 22.0), 65.0, 65.0)
     }
 
 class ChromaProofVision:
