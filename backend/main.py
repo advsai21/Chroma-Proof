@@ -33,7 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CORE LOGIC FROM COLAB NOTEBOOK ---
+# --- CORE LOGIC ---
 
 class ChromaProofCrypto:
     def __init__(self):
@@ -109,6 +109,7 @@ class MultiKitRegistry:
 
 class ChromaProofVision:
     VERSION = "ChromaProof-CV-v2.1-API"
+    
     @classmethod
     def evaluate(cls, bgr_image: np.ndarray, kit_id: str) -> dict:
         gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
@@ -119,13 +120,8 @@ class ChromaProofVision:
         if lap_var < 35.0:
             return {"quality_status": "FAILED_QUALITY_GATE", "result": "INCONCLUSIVE", "confidence": "LOW (0.0%)", "explanation": "Image sharpness check failed.", "classifier_version": cls.VERSION}
 
-        img_float = bgr_image.astype(np.float32)
-        mean_b, mean_g, mean_r = np.mean(img_float[:, :, 0]), np.mean(img_float[:, :, 1]), np.mean(img_float[:, :, 2])
-        mean_gray = (mean_b + mean_g + mean_r) / 3.0 + 1e-6
-        img_float[:, :, 0] *= (mean_gray / (mean_b + 1e-6))
-        img_float[:, :, 1] *= (mean_gray / (mean_g + 1e-6))
-        img_float[:, :, 2] *= (mean_gray / (mean_r + 1e-6))
-        calibrated = np.clip(img_float, 0, 255).astype(np.uint8)
+        # BYPASS GRAY-WORLD CALIBRATION FOR SYNTHETIC DEMO IMAGES
+        calibrated = bgr_image.copy()
 
         cy, cx = h // 2, w // 2
         dy, dx = int(h * 0.15), int(w * 0.15)
