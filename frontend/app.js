@@ -1,6 +1,21 @@
 // NOTE: Change this URL to your live Render/Railway backend URL once deployed.
 const API_URL = "https://chroma-proof.onrender.com"; 
 
+// Returns a real GPS fix as "lat,lon (+/-accuracy m)", or "GPS: unavailable".
+function getLocation() {
+    return new Promise((resolve) => {
+        if (!navigator.geolocation) { resolve("GPS: unavailable"); return; }
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const { latitude, longitude, accuracy } = pos.coords;
+                resolve(`${latitude.toFixed(6)},${longitude.toFixed(6)} (+/-${Math.round(accuracy)}m)`);
+            },
+            () => resolve("GPS: unavailable"),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    });
+}
+
 async function init() {
     // 1. Load Kit Options
     try {
@@ -28,7 +43,8 @@ async function init() {
         formData.append('image', blob, 'capture.jpg');
         formData.append('operator_id', document.getElementById('operatorId').value);
         formData.append('kit_id', document.getElementById('kitSelect').value);
-        formData.append('location', `GPS: Browser Enabled (${sourceText})`);
+        const gps = await getLocation();
+        formData.append('location', `${gps} [${sourceText}]`);
 
         const captureBtn = document.getElementById('btnCapture');
         const galleryBtn = document.getElementById('btnGallery');
